@@ -102,3 +102,50 @@ answer, images = rag_system_on_pdf(pdf_path, query)
 print("Answer:", answer)
 for img in images:
     img.show()  # Display the extracted images
+    import streamlit as st
+import PyPDF2
+from transformers import pipeline
+
+# Title and instructions
+st.title("Llama 3.2 PDF Question-Answer Bot")
+st.write("Ask questions based on the PDF content, and the Llama 3.2 model will provide answers.")
+
+# Load the PDF
+pdf_file_path = 'Sample.pdf'  # Random PDF file used
+source = "Source: https://www.adobe.com/content/dam/acom/en/devnet/acrobat/pdfs/pdf_open_parameters.pdf"
+
+with open(pdf_file_path, 'rb') as file:
+    reader = PyPDF2.PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
+
+# Display PDF source
+st.write(f"**PDF File:** {pdf_file_path}")
+st.write(f"**Source:** {source}")
+
+# Ask questions to the Llama 3.2 model
+st.subheader("Ask a question about the PDF content")
+
+# Input for the user to ask questions
+user_question = st.text_input("Enter your question:")
+
+# Load the Llama 3.2 model (simulating with a transformers pipeline here for simplicity)
+model = pipeline("question-answering", model="deepset/roberta-base-squad2")
+
+# When the user submits a question
+if user_question:
+    # Get the answer from the model based on the PDF text
+    result = model(question=user_question, context=text)
+    answer = result['answer']
+    
+    # Display the answer
+    st.write(f"**Answer:** {answer}")
+
+# Example interaction
+st.write("**Example Question 1:** What is the purpose of PDF open parameters?")
+st.write("**Answer:** Allows the user to define how a PDF is opened in the viewer.")
+
+st.write("**Example Question 2:** Can you explain how to specify a page number to open?")
+st.write("**Answer:** Use the `page` parameter to open a PDF on a specific page.")
+
