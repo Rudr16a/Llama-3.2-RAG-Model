@@ -1,1 +1,8 @@
-
+pdfplumber
+Pillow 
+transformers 
+qdrant-client 
+sentence-transformers
+streamlit
+PyPDF2
+transformers
