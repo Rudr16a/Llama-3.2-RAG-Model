@@ -4,7 +4,9 @@ import io
 from transformers import LlamaTokenizer, LlamaForCausalLM, pipeline
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import VectorParams, Distance, PayloadSchemaType
+from qdrant_client.http.models import VectorParams, Distance
+import streamlit as st
+import PyPDF2
 
 # Initialize Qdrant client
 qdrant = QdrantClient("localhost", port=6333)
@@ -94,58 +96,42 @@ def rag_system_on_pdf(pdf_path, query):
     
     return answer, images  # return the answer and extracted images
 
-# Example usage
-pdf_path = "example.pdf"
-query = "What is the main topic discussed in the document?"
-answer, images = rag_system_on_pdf(pdf_path, query)
-
-print("Answer:", answer)
-for img in images:
-    img.show()  # Display the extracted images
-    import streamlit as st
-import PyPDF2
-from transformers import pipeline
-
-# Title and instructions
+# Streamlit UI
 st.title("Llama 3.2 PDF Question-Answer Bot")
 st.write("Ask questions based on the PDF content, and the Llama 3.2 model will provide answers.")
 
-# Load the PDF
-pdf_file_path = 'Sample.pdf'  # Random PDF file used
-source = "Source: https://www.adobe.com/content/dam/acom/en/devnet/acrobat/pdfs/pdf_open_parameters.pdf"
+# File uploader for PDF
+uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
 
-with open(pdf_file_path, 'rb') as file:
-    reader = PyPDF2.PdfReader(file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text()
-
-# Display PDF source
-st.write(f"**PDF File:** {pdf_file_path}")
-st.write(f"**Source:** {source}")
-
-# Ask questions to the Llama 3.2 model
-st.subheader("Ask a question about the PDF content")
-
-# Input for the user to ask questions
-user_question = st.text_input("Enter your question:")
-
-# Load the Llama 3.2 model (simulating with a transformers pipeline here for simplicity)
-model = pipeline("question-answering", model="deepset/roberta-base-squad2")
-
-# When the user submits a question
-if user_question:
-    # Get the answer from the model based on the PDF text
-    result = model(question=user_question, context=text)
-    answer = result['answer']
+if uploaded_pdf:
+    with open("uploaded_pdf.pdf", "wb") as f:
+        f.write(uploaded_pdf.getbuffer())
     
-    # Display the answer
-    st.write(f"**Answer:** {answer}")
+    # Extract PDF text using PyPDF2 for display and embedding
+    with open("uploaded_pdf.pdf", 'rb') as file:
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text()
 
-# Example interaction
-st.write("**Example Question 1:** What is the purpose of PDF open parameters?")
-st.write("**Answer:** Allows the user to define how a PDF is opened in the viewer.")
+    st.write(f"**PDF File:** {uploaded_pdf.name}")
+    
+    # Ask questions to the Llama 3.2 model
+    st.subheader("Ask a question about the PDF content")
+    
+    # Input for the user to ask questions
+    user_question = st.text_input("Enter your question:")
 
-st.write("**Example Question 2:** Can you explain how to specify a page number to open?")
-st.write("**Answer:** Use the `page` parameter to open a PDF on a specific page.")
+    # When the user submits a question
+    if user_question:
+        # Run RAG system
+        answer, images = rag_system_on_pdf("uploaded_pdf.pdf", user_question)
 
+        # Display the answer
+        st.write(f"**Answer:** {answer}")
+
+        # Display the images extracted from the PDF
+        if images:
+            st.subheader("Extracted Images:")
+            for img in images:
+                st.image(img)
