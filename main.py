@@ -2,26 +2,28 @@ import streamlit as st
 import pdfplumber
 from PIL import Image
 import io
-from transformers import LlamaTokenizer, LlamaForCausalLM, pipeline
+import torch
+from transformers import LlamaTokenizer, LlamaForCausalLM, LlamaImageProcessor
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import VectorParams, Distance
-from llama_image_processor import LLAVAImageToText  # Assuming this is the LLAVA model
 
-# Initialize models and clients
-llama_tokenizer = LlamaTokenizer.from_pretrained('llama-3b')
-llama_model = LlamaForCausalLM.from_pretrained('llama-3b')
+# Initialize models
+model_name = "meta-llama/Llama-3.2-11b-chat-hf"
+llama_tokenizer = LlamaTokenizer.from_pretrained('model_name')
+llama_model = LlamaForCausalLM.from_pretrained('model_name', device_map="auto", torch_dtype=torch.float16)
+
+llama_image_processor=LlamaImageProcessor.from_pretrained(model_name)
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
-llava_image_processor = LLAVAImageToText()  # LLAVA model for converting images to text
 qdrant = QdrantClient("localhost", port=6333)
 
 # Streamlit UI components
-st.title("LLaMA 3.2 Multimodal RAG System")
+st.title("LLaMA 3.2 11B Multimodal RAG System")
 st.write("Upload a PDF file and ask questions about its contents.")
 
 # File upload via Streamlit
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-query = st.text_input("Enter your query:")
+query = st.text_input("Ask your own query:")
 
 # Create a Qdrant collection for indexing
 def create_qdrant_collection():
@@ -30,7 +32,7 @@ def create_qdrant_collection():
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
 
-# Function to convert PDF to images
+# Convert PDF to images
 def convert_pdf_to_images(pdf_path):
     images = []
     with pdfplumber.open(pdf_path) as pdf:
@@ -43,15 +45,17 @@ def convert_pdf_to_images(pdf_path):
             images.append(pil_image)
     return images
 
-# Convert images to text using LLAVA
+# Use LLaMA 3.2 11B to convert images to text
 def convert_images_to_text(images):
     image_texts = []
     for image in images:
-        text_description = llava_image_processor.process(image)
+        inputs = llama_image_processor(images=image, return_tensors="pt").to(llama_model.device)
+        outputs = llama_model.generate(**inputs, max_new_tokens=100)
+        text_description = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
         image_texts.append(text_description)
     return image_texts
 
-# Index text into Qdrant
+# Index extracted text into Qdrant
 def index_texts(texts):
     for i, text in enumerate(texts):
         embedding = embedder.encode(text).tolist()
@@ -75,11 +79,11 @@ def retrieve_relevant_text(query):
     )
     return [result.payload['text'] for result in results]
 
-# Generate an answer using LLaMA
+# Generate an answer using LLaMA 3.2 11B
 def generate_answer(context, query):
     input_text = f"Context: {context}\n\nQuestion: {query}\nAnswer:"
-    input_ids = llama_tokenizer(input_text, return_tensors="pt").input_ids
-    outputs = llama_model.generate(input_ids, max_length=500)
+    inputs = llama_tokenizer(input_text, return_tensors="pt").to(llama_model.device)
+    outputs = llama_model.generate(**inputs, max_new_tokens=500)
     return llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 # Main RAG pipeline
@@ -94,15 +98,12 @@ def rag_system_on_pdf(pdf_path, query):
 
 # Execute when file and query are provided
 if uploaded_file is not None and query:
-    # Convert uploaded file to path
     pdf_path = uploaded_file.name
     with open(pdf_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # Process the PDF with RAG system
     answer, images = rag_system_on_pdf(pdf_path, query)
     
-    # Display the results
     st.write(f"**Answer to your query:** {answer}")
     
     st.write("**Extracted Images:**")
@@ -112,3 +113,4 @@ if uploaded_file is not None and query:
     st.write("**Extracted and indexed text from images:**")
     for i, text in enumerate(convert_images_to_text(images)):
         st.write(f"Image {i+1}: {text}")
+
