@@ -1,3 +1,4 @@
+import streamlit as st
 import pdfplumber
 from PIL import Image
 import io
@@ -5,49 +6,52 @@ from transformers import LlamaTokenizer, LlamaForCausalLM, pipeline
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import VectorParams, Distance
-import streamlit as st
-import PyPDF2
+from llama_image_processor import LLAVAImageToText  # Assuming this is the LLAVA model
 
-# Initialize Qdrant client
-qdrant = QdrantClient("localhost", port=6333)
-
-# Initialize LLaMA model and tokenizer
+# Initialize models and clients
 llama_tokenizer = LlamaTokenizer.from_pretrained('llama-3b')
 llama_model = LlamaForCausalLM.from_pretrained('llama-3b')
-
-# Sentence transformer for embeddings (use an appropriate model)
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
+llava_image_processor = LLAVAImageToText()  # LLAVA model for converting images to text
+qdrant = QdrantClient("localhost", port=6333)
 
-# Create a collection in Qdrant for RAG
-qdrant.create_collection(
-    collection_name="pdf_collection",
-    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-)
+# Streamlit UI components
+st.title("LLaMA 3.2 Multimodal RAG System")
+st.write("Upload a PDF file and ask questions about its contents.")
 
-# Function to extract text and images from a PDF
-def extract_pdf_content(pdf_path):
-    texts = []
+# File upload via Streamlit
+uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+query = st.text_input("Enter your query:")
+
+# Create a Qdrant collection for indexing
+def create_qdrant_collection():
+    qdrant.create_collection(
+        collection_name="pdf_collection",
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+
+# Function to convert PDF to images
+def convert_pdf_to_images(pdf_path):
     images = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            # Extract text
-            text = page.extract_text()
-            if text:
-                texts.append(text)
+        for page_num, page in enumerate(pdf.pages):
+            img = page.to_image(resolution=300).original
+            img_data = io.BytesIO()
+            img.save(img_data, format="PNG")
+            img_data.seek(0)
+            pil_image = Image.open(img_data)
+            images.append(pil_image)
+    return images
 
-            # Extract images
-            for image in page.images:
-                x0, y0, x1, y1 = image["x0"], image["y0"], image["x1"], image["y1"]
-                img = page.within_bbox((x0, y0, x1, y1)).to_image()
-                img_data = io.BytesIO()
-                img.save(img_data, format="PNG")
-                img_data.seek(0)
-                pil_image = Image.open(img_data)
-                images.append(pil_image)
+# Convert images to text using LLAVA
+def convert_images_to_text(images):
+    image_texts = []
+    for image in images:
+        text_description = llava_image_processor.process(image)
+        image_texts.append(text_description)
+    return image_texts
 
-    return texts, images
-
-# Function to index text into Qdrant
+# Index text into Qdrant
 def index_texts(texts):
     for i, text in enumerate(texts):
         embedding = embedder.encode(text).tolist()
@@ -61,77 +65,50 @@ def index_texts(texts):
             }]
         )
 
-# Function to retrieve relevant documents from Qdrant
+# Retrieve relevant text from Qdrant
 def retrieve_relevant_text(query):
     query_embedding = embedder.encode(query).tolist()
     results = qdrant.search(
         collection_name="pdf_collection",
         query_vector=query_embedding,
-        limit=3  # retrieve top 3 results
+        limit=3
     )
     return [result.payload['text'] for result in results]
 
-# Function to generate response using LLaMA model
+# Generate an answer using LLaMA
 def generate_answer(context, query):
     input_text = f"Context: {context}\n\nQuestion: {query}\nAnswer:"
     input_ids = llama_tokenizer(input_text, return_tensors="pt").input_ids
     outputs = llama_model.generate(input_ids, max_length=500)
     return llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-# Main function to run RAG on a PDF
+# Main RAG pipeline
 def rag_system_on_pdf(pdf_path, query):
-    texts, images = extract_pdf_content(pdf_path)
-
-    # Index extracted texts
-    index_texts(texts)
-
-    # Retrieve relevant texts based on the query
+    images = convert_pdf_to_images(pdf_path)
+    texts_from_images = convert_images_to_text(images)
+    index_texts(texts_from_images)
     relevant_texts = retrieve_relevant_text(query)
-
-    # Combine relevant texts to form a context for generation
     context = " ".join(relevant_texts)
-
-    # Generate a response using LLaMA
     answer = generate_answer(context, query)
+    return answer, images
+
+# Execute when file and query are provided
+if uploaded_file is not None and query:
+    # Convert uploaded file to path
+    pdf_path = uploaded_file.name
+    with open(pdf_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
     
-    return answer, images  # return the answer and extracted images
-
-# Streamlit UI
-st.title("Llama 3.2 PDF Question-Answer Bot")
-st.write("Ask questions based on the PDF content, and the Llama 3.2 model will provide answers.")
-
-# File uploader for PDF
-uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
-
-if uploaded_pdf:
-    with open("uploaded_pdf.pdf", "wb") as f:
-        f.write(uploaded_pdf.getbuffer())
+    # Process the PDF with RAG system
+    answer, images = rag_system_on_pdf(pdf_path, query)
     
-    # Extract PDF text using PyPDF2 for display and embedding
-    with open("uploaded_pdf.pdf", 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text()
-
-    st.write(f"**PDF File:** {uploaded_pdf.name}")
+    # Display the results
+    st.write(f"**Answer to your query:** {answer}")
     
-    # Ask questions to the Llama 3.2 model
-    st.subheader("Ask a question about the PDF content")
-    
-    # Input for the user to ask questions
-    user_question = st.text_input("Enter your question:")
+    st.write("**Extracted Images:**")
+    for img in images:
+        st.image(img)
 
-    # When the user submits a question
-    if user_question:
-        # Run RAG system
-        answer, images = rag_system_on_pdf("uploaded_pdf.pdf", user_question)
-
-        # Display the answer
-        st.write(f"**Answer:** {answer}")
-
-        # Display the images extracted from the PDF
-        if images:
-            st.subheader("Extracted Images:")
-            for img in images:
-                st.image(img)
+    st.write("**Extracted and indexed text from images:**")
+    for i, text in enumerate(convert_images_to_text(images)):
+        st.write(f"Image {i+1}: {text}")
